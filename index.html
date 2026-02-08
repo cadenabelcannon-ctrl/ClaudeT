@@ -44,8 +44,14 @@
       margin-top: 4px;
     }
 
-    #reset-btn {
+    /* Settings dropdown */
+    #settings-wrapper {
+      display: inline-block;
+      position: relative;
       margin-top: 8px;
+    }
+
+    #settings-btn {
       padding: 6px 20px;
       background: transparent;
       border: 1px solid #374151;
@@ -58,10 +64,69 @@
       transition: all 0.3s ease;
     }
 
-    #reset-btn:hover {
+    #settings-btn:hover,
+    #settings-btn.active {
       border-color: #93c5fd;
       color: #93c5fd;
       box-shadow: 0 0 10px rgba(147, 197, 253, 0.2);
+    }
+
+    #settings-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #111827;
+      border: 1px solid #374151;
+      border-radius: 6px;
+      padding: 8px 0;
+      min-width: 280px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      z-index: 200;
+    }
+
+    #settings-dropdown.open {
+      display: block;
+    }
+
+    #settings-dropdown .settings-item {
+      display: flex;
+      align-items: center;
+      padding: 8px 16px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      font-size: 0.82rem;
+      color: #d1d5db;
+      user-select: none;
+    }
+
+    #settings-dropdown .settings-item:hover {
+      background: #1f2937;
+    }
+
+    #settings-dropdown .settings-divider {
+      height: 1px;
+      background: #374151;
+      margin: 4px 0;
+    }
+
+    #settings-dropdown .settings-item input[type="checkbox"] {
+      margin-right: 10px;
+      accent-color: #93c5fd;
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+    }
+
+    #settings-dropdown .settings-item.action-btn {
+      color: #f87171;
+      justify-content: center;
+      font-weight: 500;
+    }
+
+    #settings-dropdown .settings-item.action-btn:hover {
+      background: #1c1520;
     }
 
     #map-container {
@@ -181,7 +246,22 @@
   <div id="header">
     <h1>Interactive World Map</h1>
     <p>Click on any country or US state to highlight it. Click again to deselect.</p>
-    <button id="reset-btn">Reset All</button>
+    <div id="settings-wrapper">
+      <button id="settings-btn">Settings &#9662;</button>
+      <div id="settings-dropdown">
+        <label class="settings-item">
+          <input type="checkbox" id="opt-hide-names"> Hide all names
+        </label>
+        <label class="settings-item">
+          <input type="checkbox" id="opt-highlighted-only"> Show only highlighted names
+        </label>
+        <label class="settings-item">
+          <input type="checkbox" id="opt-collapse-us"> Collapse US state names
+        </label>
+        <div class="settings-divider"></div>
+        <div class="settings-item action-btn" id="reset-btn">Reset All</div>
+      </div>
+    </div>
   </div>
   <div id="tooltip"></div>
   <div id="map-container">
@@ -204,6 +284,15 @@
     ];
 
     var selectedCountries = {};
+
+    // Settings state
+    var settings = {
+      hideNames: false,
+      highlightedOnly: false,
+      collapseUS: false
+    };
+
+    var currentZoom = 1;
 
     function getColorForCountry(id) {
       var hash = 0;
@@ -262,6 +351,33 @@
       .attr("d", path);
 
     var tooltip = document.getElementById("tooltip");
+
+    // Manual label position overrides [longitude, latitude]
+    // For countries where the geometric centroid falls in an awkward spot
+    var labelOverrides = {
+      "124": [-96, 56],      // Canada — center on prairies
+      "578": [15, 65],       // Norway — southern mainland
+      "604": [-75, -10],     // Peru — center inland
+      "250": [2.5, 47],      // France — mainland only
+      "643": [90, 62],       // Russia — central Siberia
+      "360": [118, -2],      // Indonesia — over Borneo/Java area
+      "152": [-71, -35],     // Chile — central Chile
+      "458": [109, 3],       // Malaysia — eastern Malaysia
+      "840": [-98, 39],      // US (kept for collapsed label)
+      "012": [3, 28],        // Algeria — center south
+      "076": [-52, -12],     // Brazil — shifted slightly
+      "156": [104, 36],      // China — central
+      "170": [-73, 4],       // Colombia
+      "178": [16, -1],       // Congo
+      "180": [24, -3],       // DR Congo
+      "246": [26, 64],       // Finland
+      "356": [79, 22],       // India
+      "398": [68, 48],       // Kazakhstan
+      "566": [8, 9],         // Nigeria
+      "752": [16, 63],       // Sweden
+      "804": [32, 49],       // Ukraine
+      "032": [-64, -34],     // Argentina
+    };
 
     // Country name lookup
     var countryNames = {
@@ -361,6 +477,68 @@
     // Adjacency map: id -> [neighborId, ...]
     var adjacency = {};
 
+    // References set after data loads
+    var labelsGroup, countriesGroup, usCollapsedLabel;
+
+    // Get label position for a feature — use override if available, else centroid
+    function getLabelPos(d) {
+      var id = d.id;
+      if (labelOverrides[id]) {
+        var projected = projection(labelOverrides[id]);
+        return projected;
+      }
+      return path.centroid(d);
+    }
+
+    function isUSState(id) {
+      return id && id.indexOf("US-") === 0;
+    }
+
+    // Central function to apply label visibility based on all settings + zoom
+    function applyLabelVisibility() {
+      if (!labelsGroup) return;
+      var k = currentZoom;
+
+      labelsGroup.selectAll(".country-label")
+        .attr("display", function (d) {
+          // Always hide if hideNames is on
+          if (settings.hideNames) return "none";
+
+          var id = d.id;
+          var isState = isUSState(id);
+
+          // If collapseUS is on, hide individual state labels
+          if (settings.collapseUS && isState) return "none";
+
+          // If highlightedOnly is on, only show selected items
+          if (settings.highlightedOnly && !selectedCountries[id]) return "none";
+
+          // Size-based visibility (zoom-aware)
+          var centroid = path.centroid(d);
+          if (isNaN(centroid[0]) || isNaN(centroid[1])) return "none";
+          var bounds = path.bounds(d);
+          var bw = (bounds[1][0] - bounds[0][0]) * k;
+          var bh = (bounds[1][1] - bounds[0][1]) * k;
+          if (bw < 8 || bh < 6) return "none";
+
+          return null;
+        });
+
+      // Handle the collapsed US label
+      if (usCollapsedLabel) {
+        var showCollapsed = settings.collapseUS && !settings.hideNames;
+        if (settings.highlightedOnly && showCollapsed) {
+          // Show only if at least one state is selected
+          var anyStateSelected = false;
+          for (var sid in selectedCountries) {
+            if (isUSState(sid)) { anyStateSelected = true; break; }
+          }
+          showCollapsed = anyStateSelected;
+        }
+        usCollapsedLabel.attr("display", showCollapsed ? null : "none");
+      }
+    }
+
     Promise.all([
       d3.json(worldDataUrl),
       d3.json(statesDataUrl)
@@ -384,7 +562,7 @@
       var wNeighbors = topojson.neighbors(wGeom);
       for (var i = 0; i < wGeom.length; i++) {
         var cId = wGeom[i].id;
-        if (cId === "840") continue; // skip US
+        if (cId === "840") continue;
         adjacency[cId] = [];
         for (var j = 0; j < wNeighbors[i].length; j++) {
           var nId = wGeom[wNeighbors[i][j]].id;
@@ -394,7 +572,6 @@
 
       // --- US states ---
       var states = topojson.feature(us, us.objects.states);
-      // Prefix state IDs with "US-" to avoid collision with country numeric IDs
       states.features.forEach(function (f) {
         f.id = "US-" + f.id;
       });
@@ -420,7 +597,7 @@
       for (key in stateNames) { allNames["US-" + key] = stateNames[key]; }
 
       // --- Render ---
-      var countriesGroup = masterGroup.append("g").attr("class", "countries-group");
+      countriesGroup = masterGroup.append("g").attr("class", "countries-group");
 
       countriesGroup.selectAll(".country")
         .data(allFeatures)
@@ -444,7 +621,7 @@
           tooltip.style.opacity = "0";
         });
 
-      var labelsGroup = masterGroup.append("g").attr("class", "labels-group");
+      labelsGroup = masterGroup.append("g").attr("class", "labels-group");
 
       labelsGroup.selectAll(".country-label")
         .data(allFeatures)
@@ -452,34 +629,39 @@
         .attr("class", function (d) {
           var cls = "country-label";
           if (largeCountries[d.id]) cls += " large";
-          else if (smallCountries[d.id] || (d.id && d.id.indexOf("US-") === 0)) cls += " small";
+          else if (smallCountries[d.id] || isUSState(d.id)) cls += " small";
           return cls;
         })
         .attr("data-id", function (d) { return d.id; })
-        .attr("x", function (d) { return path.centroid(d)[0]; })
-        .attr("y", function (d) { return path.centroid(d)[1]; })
+        .attr("x", function (d) { return getLabelPos(d)[0]; })
+        .attr("y", function (d) { return getLabelPos(d)[1]; })
         .text(function (d) {
           return allNames[d.id] || "";
-        })
-        .attr("display", function (d) {
-          var centroid = path.centroid(d);
-          if (isNaN(centroid[0]) || isNaN(centroid[1])) return "none";
-          var bounds = path.bounds(d);
-          var bw = bounds[1][0] - bounds[0][0];
-          var bh = bounds[1][1] - bounds[0][1];
-          if (bw < 8 || bh < 6) return "none";
-          return null;
         });
 
-      // Zoom and pan — applied to the single master group
+      // Collapsed US label — "United States of America" shown when collapseUS is on
+      var usPos = projection(labelOverrides["840"]);
+      usCollapsedLabel = labelsGroup.append("text")
+        .attr("class", "country-label large")
+        .attr("data-id", "US-collapsed")
+        .attr("x", usPos[0])
+        .attr("y", usPos[1])
+        .text("United States of America")
+        .attr("display", "none");
+
+      // Initial label visibility
+      applyLabelVisibility();
+
+      // Zoom and pan
       var zoom = d3.zoom()
         .scaleExtent([1, 20])
         .on("zoom", function (event) {
           masterGroup.attr("transform", event.transform);
+          currentZoom = event.transform.k;
 
           var k = event.transform.k;
 
-          // Scale labels inversely so they stay readable
+          // Scale labels inversely
           labelsGroup.selectAll(".country-label")
             .style("font-size", function () {
               var base = this.classList.contains("large") ? 7 :
@@ -500,17 +682,8 @@
           masterGroup.select(".graticule")
             .style("stroke-width", (0.3 / k) + "px");
 
-          // Show more labels when zoomed in
-          labelsGroup.selectAll(".country-label")
-            .attr("display", function (d) {
-              var centroid = path.centroid(d);
-              if (isNaN(centroid[0]) || isNaN(centroid[1])) return "none";
-              var bounds = path.bounds(d);
-              var bw = (bounds[1][0] - bounds[0][0]) * k;
-              var bh = (bounds[1][1] - bounds[0][1]) * k;
-              if (bw < 8 || bh < 6) return "none";
-              return null;
-            });
+          // Recalculate label visibility
+          applyLabelVisibility();
         });
 
       svg.call(zoom);
@@ -531,14 +704,12 @@
         var nColor = selectedCountries[neighborIds[i]];
         if (nColor) usedColors[nColor] = true;
       }
-      // Try the deterministic color first
       var preferred = getColorForCountry(countryId);
       if (!usedColors[preferred]) return preferred;
-      // Otherwise find first unused color
       for (var j = 0; j < COLORS.length; j++) {
         if (!usedColors[COLORS[j]]) return COLORS[j];
       }
-      return preferred; // fallback if all colors are taken
+      return preferred;
     }
 
     function handleCountryClick(element, d) {
@@ -546,26 +717,76 @@
       var id = d.id;
 
       if (selectedCountries[id]) {
-        // Deselect
         delete selectedCountries[id];
         el.classed("selected", false)
           .style("fill", null)
           .style("stroke", null);
-        // Remove label highlight
         d3.select('.country-label[data-id="' + id + '"]')
           .classed("highlighted", false);
       } else {
-        // Select with a neighbor-safe color
         var color = getAvailableColor(id);
         selectedCountries[id] = color;
         el.classed("selected", true)
           .style("fill", color)
           .style("stroke", d3.color(color).brighter(1).toString());
-        // Highlight the label
         d3.select('.country-label[data-id="' + id + '"]')
           .classed("highlighted", true);
       }
+
+      // Update collapsed US label highlight
+      if (usCollapsedLabel && isUSState(id)) {
+        var anyStateSelected = false;
+        for (var sid in selectedCountries) {
+          if (isUSState(sid)) { anyStateSelected = true; break; }
+        }
+        usCollapsedLabel.classed("highlighted", anyStateSelected);
+      }
+
+      applyLabelVisibility();
     }
+
+    // --- Settings UI ---
+    var settingsBtn = document.getElementById("settings-btn");
+    var settingsDropdown = document.getElementById("settings-dropdown");
+
+    settingsBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var isOpen = settingsDropdown.classList.toggle("open");
+      settingsBtn.classList.toggle("active", isOpen);
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener("click", function () {
+      settingsDropdown.classList.remove("open");
+      settingsBtn.classList.remove("active");
+    });
+
+    settingsDropdown.addEventListener("click", function (e) {
+      e.stopPropagation();
+    });
+
+    document.getElementById("opt-hide-names").addEventListener("change", function () {
+      settings.hideNames = this.checked;
+      if (this.checked) {
+        document.getElementById("opt-highlighted-only").checked = false;
+        settings.highlightedOnly = false;
+      }
+      applyLabelVisibility();
+    });
+
+    document.getElementById("opt-highlighted-only").addEventListener("change", function () {
+      settings.highlightedOnly = this.checked;
+      if (this.checked) {
+        document.getElementById("opt-hide-names").checked = false;
+        settings.hideNames = false;
+      }
+      applyLabelVisibility();
+    });
+
+    document.getElementById("opt-collapse-us").addEventListener("change", function () {
+      settings.collapseUS = this.checked;
+      applyLabelVisibility();
+    });
 
     document.getElementById("reset-btn").addEventListener("click", function () {
       selectedCountries = {};
@@ -575,6 +796,10 @@
         .style("stroke", null);
       d3.selectAll(".country-label")
         .classed("highlighted", false);
+      if (usCollapsedLabel) usCollapsedLabel.classed("highlighted", false);
+      applyLabelVisibility();
+      settingsDropdown.classList.remove("open");
+      settingsBtn.classList.remove("active");
     });
 
   })();
