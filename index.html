@@ -4,7 +4,167 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Interactive World Map</title>
-  <link rel="stylesheet" href="style.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background-color: #0a0e17;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #header {
+      text-align: center;
+      padding: 12px 20px;
+      background: linear-gradient(180deg, #111827, #0a0e17);
+      position: relative;
+      z-index: 10;
+      flex-shrink: 0;
+    }
+
+    #header h1 {
+      font-size: 1.5rem;
+      font-weight: 300;
+      letter-spacing: 2px;
+      color: #93c5fd;
+      text-transform: uppercase;
+    }
+
+    #header p {
+      font-size: 0.85rem;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    #reset-btn {
+      margin-top: 8px;
+      padding: 6px 20px;
+      background: transparent;
+      border: 1px solid #374151;
+      color: #9ca3af;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      transition: all 0.3s ease;
+    }
+
+    #reset-btn:hover {
+      border-color: #93c5fd;
+      color: #93c5fd;
+      box-shadow: 0 0 10px rgba(147, 197, 253, 0.2);
+    }
+
+    #map-container {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .country {
+      fill: #1f2937;
+      stroke: #374151;
+      stroke-width: 0.5px;
+      cursor: pointer;
+      transition: fill 0.3s ease;
+    }
+
+    .country:hover {
+      fill: #374151;
+      stroke: #6b7280;
+      stroke-width: 1px;
+    }
+
+    .country.selected {
+      stroke-width: 2px;
+      filter: url(#glow);
+    }
+
+    .country-label {
+      font-size: 3px;
+      fill: #9ca3af;
+      text-anchor: middle;
+      pointer-events: none;
+      user-select: none;
+      font-weight: 300;
+    }
+
+    .country-label.small {
+      font-size: 2px;
+    }
+
+    .country-label.large {
+      font-size: 4px;
+    }
+
+    #tooltip {
+      position: absolute;
+      padding: 8px 14px;
+      background: rgba(17, 24, 39, 0.95);
+      border: 1px solid #4b5563;
+      border-radius: 6px;
+      color: #e5e7eb;
+      font-size: 0.85rem;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      z-index: 100;
+      white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .ocean {
+      fill: #0f172a;
+    }
+
+    .graticule {
+      fill: none;
+      stroke: #1e293b;
+      stroke-width: 0.3px;
+    }
+
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #6b7280;
+      font-size: 1rem;
+      letter-spacing: 1px;
+    }
+
+    #loading .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid #374151;
+      border-top-color: #93c5fd;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 10px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
 </head>
 <body>
   <div id="header">
@@ -14,11 +174,283 @@
   </div>
   <div id="tooltip"></div>
   <div id="map-container">
+    <div id="loading"><span class="spinner"></span>Loading map data...</div>
     <svg id="map"></svg>
   </div>
 
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://d3js.org/topojson.v3.min.js"></script>
-  <script src="app.js"></script>
+  <script>
+  (function () {
+    "use strict";
+
+    // Vibrant color palette for selected countries
+    var COLORS = [
+      "#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16",
+      "#22c55e", "#14b8a6", "#06b6d4", "#0ea5e9", "#3b82f6",
+      "#6366f1", "#8b5cf6", "#a855f7", "#d946ef", "#ec4899",
+      "#f43f5e", "#10b981", "#0891b2", "#7c3aed", "#e11d48"
+    ];
+
+    var selectedCountries = {};
+
+    function getColorForCountry(id) {
+      var hash = 0;
+      var str = String(id);
+      for (var i = 0; i < str.length; i++) {
+        hash = str.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      return COLORS[Math.abs(hash) % COLORS.length];
+    }
+
+    // Use fixed viewBox dimensions (standard world map aspect ratio)
+    var mapWidth = 960;
+    var mapHeight = 500;
+
+    var svg = d3.select("#map")
+      .attr("viewBox", "0 0 " + mapWidth + " " + mapHeight)
+      .attr("preserveAspectRatio", "xMidYMid meet");
+
+    // Glow filter
+    var defs = svg.append("defs");
+    var glowFilter = defs.append("filter")
+      .attr("id", "glow")
+      .attr("x", "-50%")
+      .attr("y", "-50%")
+      .attr("width", "200%")
+      .attr("height", "200%");
+
+    glowFilter.append("feGaussianBlur")
+      .attr("stdDeviation", "2.5")
+      .attr("result", "coloredBlur");
+
+    var feMerge = glowFilter.append("feMerge");
+    feMerge.append("feMergeNode").attr("in", "coloredBlur");
+    feMerge.append("feMergeNode").attr("in", "SourceGraphic");
+
+    // Projection
+    var projection = d3.geoNaturalEarth1()
+      .scale(160)
+      .translate([mapWidth / 2, mapHeight / 2]);
+
+    var path = d3.geoPath().projection(projection);
+
+    // Ocean
+    svg.append("path")
+      .datum({ type: "Sphere" })
+      .attr("class", "ocean")
+      .attr("d", path);
+
+    // Graticule
+    svg.append("path")
+      .datum(d3.geoGraticule()())
+      .attr("class", "graticule")
+      .attr("d", path);
+
+    var tooltip = document.getElementById("tooltip");
+
+    // Country name lookup
+    var countryNames = {
+      "004": "Afghanistan", "008": "Albania", "012": "Algeria", "024": "Angola",
+      "032": "Argentina", "036": "Australia", "040": "Austria", "050": "Bangladesh",
+      "056": "Belgium", "064": "Bhutan", "068": "Bolivia", "070": "Bosnia & Herz.",
+      "072": "Botswana", "076": "Brazil", "100": "Bulgaria", "104": "Myanmar",
+      "108": "Burundi", "112": "Belarus", "116": "Cambodia", "120": "Cameroon",
+      "124": "Canada", "140": "Central African Rep.", "144": "Sri Lanka",
+      "148": "Chad", "152": "Chile", "156": "China", "170": "Colombia",
+      "178": "Congo", "180": "Dem. Rep. Congo", "188": "Costa Rica",
+      "191": "Croatia", "192": "Cuba", "196": "Cyprus", "203": "Czechia",
+      "204": "Benin", "208": "Denmark", "214": "Dominican Rep.",
+      "218": "Ecuador", "222": "El Salvador", "226": "Eq. Guinea",
+      "231": "Ethiopia", "232": "Eritrea", "233": "Estonia",
+      "242": "Fiji", "246": "Finland", "250": "France",
+      "262": "Djibouti", "266": "Gabon", "268": "Georgia", "270": "Gambia",
+      "275": "Palestine", "276": "Germany", "288": "Ghana",
+      "300": "Greece", "320": "Guatemala", "324": "Guinea",
+      "328": "Guyana", "332": "Haiti", "340": "Honduras",
+      "348": "Hungary", "352": "Iceland", "356": "India",
+      "360": "Indonesia", "364": "Iran", "368": "Iraq",
+      "372": "Ireland", "376": "Israel", "380": "Italy",
+      "384": "Ivory Coast", "388": "Jamaica",
+      "392": "Japan", "398": "Kazakhstan", "400": "Jordan",
+      "404": "Kenya", "408": "North Korea", "410": "South Korea",
+      "414": "Kuwait", "417": "Kyrgyzstan", "418": "Laos",
+      "422": "Lebanon", "426": "Lesotho", "428": "Latvia",
+      "430": "Liberia", "434": "Libya", "440": "Lithuania",
+      "442": "Luxembourg", "450": "Madagascar", "454": "Malawi",
+      "458": "Malaysia", "466": "Mali", "478": "Mauritania",
+      "484": "Mexico", "496": "Mongolia", "498": "Moldova",
+      "504": "Morocco", "508": "Mozambique", "512": "Oman",
+      "516": "Namibia", "524": "Nepal", "528": "Netherlands",
+      "540": "New Caledonia", "548": "Vanuatu",
+      "554": "New Zealand", "558": "Nicaragua", "562": "Niger",
+      "566": "Nigeria", "578": "Norway", "586": "Pakistan",
+      "591": "Panama", "598": "Papua New Guinea",
+      "600": "Paraguay", "604": "Peru", "608": "Philippines",
+      "616": "Poland", "620": "Portugal", "630": "Puerto Rico",
+      "634": "Qatar", "642": "Romania", "643": "Russia",
+      "646": "Rwanda", "682": "Saudi Arabia", "686": "Senegal",
+      "688": "Serbia", "694": "Sierra Leone", "702": "Singapore",
+      "703": "Slovakia", "704": "Vietnam", "705": "Slovenia",
+      "706": "Somalia", "710": "South Africa", "716": "Zimbabwe",
+      "724": "Spain", "728": "South Sudan", "729": "Sudan",
+      "732": "W. Sahara", "740": "Suriname",
+      "748": "Eswatini", "752": "Sweden", "756": "Switzerland",
+      "760": "Syria", "762": "Tajikistan", "764": "Thailand",
+      "768": "Togo", "780": "Trinidad & Tobago",
+      "784": "UAE", "788": "Tunisia", "792": "Turkey",
+      "795": "Turkmenistan", "800": "Uganda", "804": "Ukraine",
+      "807": "N. Macedonia", "818": "Egypt", "826": "United Kingdom",
+      "834": "Tanzania", "840": "United States", "854": "Burkina Faso",
+      "858": "Uruguay", "860": "Uzbekistan", "862": "Venezuela",
+      "887": "Yemen", "894": "Zambia",
+      "-99": "N. Cyprus", "010": "Antarctica"
+    };
+
+    var largeCountries = {
+      "840": true, "124": true, "643": true, "156": true, "076": true,
+      "036": true, "356": true, "032": true, "398": true, "012": true
+    };
+
+    var smallCountries = {
+      "442": true, "196": true, "070": true, "191": true, "705": true,
+      "703": true, "233": true, "428": true, "440": true, "268": true,
+      "040": true, "756": true, "208": true, "300": true, "348": true,
+      "203": true, "056": true, "528": true, "372": true, "376": true,
+      "400": true, "422": true, "275": true, "634": true, "414": true,
+      "784": true, "270": true, "262": true, "630": true, "332": true,
+      "214": true, "388": true, "780": true, "328": true, "740": true,
+      "702": true, "064": true
+    };
+
+    var worldDataUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+
+    d3.json(worldDataUrl).then(function (world) {
+      // Hide loading indicator
+      var loadingEl = document.getElementById("loading");
+      if (loadingEl) loadingEl.style.display = "none";
+
+      var countries = topojson.feature(world, world.objects.countries);
+
+      var countriesGroup = svg.append("g").attr("class", "countries-group");
+
+      countriesGroup.selectAll(".country")
+        .data(countries.features)
+        .join("path")
+        .attr("class", "country")
+        .attr("d", path)
+        .attr("data-id", function (d) { return d.id; })
+        .on("click", function (event, d) {
+          handleCountryClick(this, d);
+        })
+        .on("mouseenter", function (event, d) {
+          var name = countryNames[d.id] || d.properties.name || "Unknown";
+          tooltip.textContent = name;
+          tooltip.style.opacity = "1";
+        })
+        .on("mousemove", function (event) {
+          tooltip.style.left = (event.pageX + 14) + "px";
+          tooltip.style.top = (event.pageY - 14) + "px";
+        })
+        .on("mouseleave", function () {
+          tooltip.style.opacity = "0";
+        });
+
+      var labelsGroup = svg.append("g").attr("class", "labels-group");
+
+      labelsGroup.selectAll(".country-label")
+        .data(countries.features)
+        .join("text")
+        .attr("class", function (d) {
+          var cls = "country-label";
+          if (largeCountries[d.id]) cls += " large";
+          else if (smallCountries[d.id]) cls += " small";
+          return cls;
+        })
+        .attr("x", function (d) { return path.centroid(d)[0]; })
+        .attr("y", function (d) { return path.centroid(d)[1]; })
+        .text(function (d) {
+          return countryNames[d.id] || "";
+        })
+        .attr("display", function (d) {
+          var centroid = path.centroid(d);
+          if (isNaN(centroid[0]) || isNaN(centroid[1])) return "none";
+          var bounds = path.bounds(d);
+          var bw = bounds[1][0] - bounds[0][0];
+          var bh = bounds[1][1] - bounds[0][1];
+          if (bw < 12 || bh < 10) return "none";
+          return null;
+        });
+
+      // Zoom and pan
+      var zoom = d3.zoom()
+        .scaleExtent([1, 12])
+        .on("zoom", function (event) {
+          countriesGroup.attr("transform", event.transform);
+          labelsGroup.attr("transform", event.transform);
+
+          var k = event.transform.k;
+          labelsGroup.selectAll(".country-label")
+            .style("font-size", function () {
+              var base = this.classList.contains("large") ? 4 :
+                         this.classList.contains("small") ? 2 : 3;
+              return (base / k) + "px";
+            });
+
+          countriesGroup.selectAll(".country")
+            .style("stroke-width", function () {
+              return this.classList.contains("selected") ? (2 / k) + "px" : (0.5 / k) + "px";
+            });
+
+          labelsGroup.selectAll(".country-label")
+            .attr("display", function (d) {
+              var centroid = path.centroid(d);
+              if (isNaN(centroid[0]) || isNaN(centroid[1])) return "none";
+              var bounds = path.bounds(d);
+              var bw = (bounds[1][0] - bounds[0][0]) * k;
+              var bh = (bounds[1][1] - bounds[0][1]) * k;
+              if (bw < 12 || bh < 10) return "none";
+              return null;
+            });
+        });
+
+      svg.call(zoom);
+
+    }).catch(function (err) {
+      console.error("Failed to load world map data:", err);
+      var loadingEl = document.getElementById("loading");
+      if (loadingEl) {
+        loadingEl.innerHTML = '<span style="color:#ef4444;">Failed to load map data.<br>Please open this page via a local web server:<br><code style="color:#93c5fd;">python3 -m http.server 8000</code><br>then visit <code style="color:#93c5fd;">http://localhost:8000</code></span>';
+      }
+    });
+
+    function handleCountryClick(element, d) {
+      var el = d3.select(element);
+      var id = d.id;
+
+      if (selectedCountries[id]) {
+        delete selectedCountries[id];
+        el.classed("selected", false)
+          .style("fill", null)
+          .style("stroke", null);
+      } else {
+        var color = getColorForCountry(id);
+        selectedCountries[id] = color;
+        el.classed("selected", true)
+          .style("fill", color)
+          .style("stroke", d3.color(color).brighter(1).toString());
+      }
+    }
+
+    document.getElementById("reset-btn").addEventListener("click", function () {
+      selectedCountries = {};
+      d3.selectAll(".country")
+        .classed("selected", false)
+        .style("fill", null)
+        .style("stroke", null);
+    });
+
+  })();
+  </script>
 </body>
 </html>
