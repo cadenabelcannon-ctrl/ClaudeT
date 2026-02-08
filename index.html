@@ -97,20 +97,31 @@
     }
 
     .country-label {
-      font-size: 3px;
-      fill: #9ca3af;
+      font-size: 5px;
+      fill: #cbd5e1;
       text-anchor: middle;
       pointer-events: none;
       user-select: none;
-      font-weight: 300;
+      font-weight: 400;
+      stroke: #0a0e17;
+      stroke-width: 0.3px;
+      paint-order: stroke fill;
     }
 
     .country-label.small {
-      font-size: 2px;
+      font-size: 3.5px;
     }
 
     .country-label.large {
-      font-size: 4px;
+      font-size: 7px;
+      font-weight: 600;
+    }
+
+    .country-label.highlighted {
+      fill: #ffffff;
+      font-weight: 700;
+      stroke: #000000;
+      stroke-width: 0.5px;
     }
 
     #tooltip {
@@ -235,14 +246,17 @@
 
     var path = d3.geoPath().projection(projection);
 
+    // Master group for zoom — everything goes in here
+    var masterGroup = svg.append("g").attr("class", "master-group");
+
     // Ocean
-    svg.append("path")
+    masterGroup.append("path")
       .datum({ type: "Sphere" })
       .attr("class", "ocean")
       .attr("d", path);
 
     // Graticule
-    svg.append("path")
+    masterGroup.append("path")
       .datum(d3.geoGraticule()())
       .attr("class", "graticule")
       .attr("d", path);
@@ -325,6 +339,9 @@
 
     var worldDataUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
+    // Adjacency map: countryId -> [neighborId, ...]
+    var adjacency = {};
+
     d3.json(worldDataUrl).then(function (world) {
       // Hide loading indicator
       var loadingEl = document.getElementById("loading");
@@ -332,7 +349,18 @@
 
       var countries = topojson.feature(world, world.objects.countries);
 
-      var countriesGroup = svg.append("g").attr("class", "countries-group");
+      // Build adjacency using topojson.neighbors
+      var neighbors = topojson.neighbors(world.objects.countries.geometries);
+      var geometries = world.objects.countries.geometries;
+      for (var i = 0; i < geometries.length; i++) {
+        var myId = geometries[i].id;
+        adjacency[myId] = [];
+        for (var j = 0; j < neighbors[i].length; j++) {
+          adjacency[myId].push(geometries[neighbors[i][j]].id);
+        }
+      }
+
+      var countriesGroup = masterGroup.append("g").attr("class", "countries-group");
 
       countriesGroup.selectAll(".country")
         .data(countries.features)
@@ -356,7 +384,7 @@
           tooltip.style.opacity = "0";
         });
 
-      var labelsGroup = svg.append("g").attr("class", "labels-group");
+      var labelsGroup = masterGroup.append("g").attr("class", "labels-group");
 
       labelsGroup.selectAll(".country-label")
         .data(countries.features)
@@ -367,6 +395,7 @@
           else if (smallCountries[d.id]) cls += " small";
           return cls;
         })
+        .attr("data-id", function (d) { return d.id; })
         .attr("x", function (d) { return path.centroid(d)[0]; })
         .attr("y", function (d) { return path.centroid(d)[1]; })
         .text(function (d) {
@@ -382,26 +411,36 @@
           return null;
         });
 
-      // Zoom and pan
+      // Zoom and pan — applied to the single master group
       var zoom = d3.zoom()
         .scaleExtent([1, 12])
         .on("zoom", function (event) {
-          countriesGroup.attr("transform", event.transform);
-          labelsGroup.attr("transform", event.transform);
+          masterGroup.attr("transform", event.transform);
 
           var k = event.transform.k;
+
+          // Scale labels inversely so they stay readable
           labelsGroup.selectAll(".country-label")
             .style("font-size", function () {
-              var base = this.classList.contains("large") ? 4 :
-                         this.classList.contains("small") ? 2 : 3;
+              var base = this.classList.contains("large") ? 7 :
+                         this.classList.contains("small") ? 3.5 : 5;
               return (base / k) + "px";
+            })
+            .style("stroke-width", function () {
+              return (0.3 / k) + "px";
             });
 
+          // Scale stroke widths inversely
           countriesGroup.selectAll(".country")
             .style("stroke-width", function () {
               return this.classList.contains("selected") ? (2 / k) + "px" : (0.5 / k) + "px";
             });
 
+          // Graticule stroke
+          masterGroup.select(".graticule")
+            .style("stroke-width", (0.3 / k) + "px");
+
+          // Show more labels when zoomed in
           labelsGroup.selectAll(".country-label")
             .attr("display", function (d) {
               var centroid = path.centroid(d);
@@ -424,21 +463,47 @@
       }
     });
 
+    // Pick a color that no selected neighbor is using
+    function getAvailableColor(countryId) {
+      var neighborIds = adjacency[countryId] || [];
+      var usedColors = {};
+      for (var i = 0; i < neighborIds.length; i++) {
+        var nColor = selectedCountries[neighborIds[i]];
+        if (nColor) usedColors[nColor] = true;
+      }
+      // Try the deterministic color first
+      var preferred = getColorForCountry(countryId);
+      if (!usedColors[preferred]) return preferred;
+      // Otherwise find first unused color
+      for (var j = 0; j < COLORS.length; j++) {
+        if (!usedColors[COLORS[j]]) return COLORS[j];
+      }
+      return preferred; // fallback if all colors are taken
+    }
+
     function handleCountryClick(element, d) {
       var el = d3.select(element);
       var id = d.id;
 
       if (selectedCountries[id]) {
+        // Deselect
         delete selectedCountries[id];
         el.classed("selected", false)
           .style("fill", null)
           .style("stroke", null);
+        // Remove label highlight
+        d3.select('.country-label[data-id="' + id + '"]')
+          .classed("highlighted", false);
       } else {
-        var color = getColorForCountry(id);
+        // Select with a neighbor-safe color
+        var color = getAvailableColor(id);
         selectedCountries[id] = color;
         el.classed("selected", true)
           .style("fill", color)
           .style("stroke", d3.color(color).brighter(1).toString());
+        // Highlight the label
+        d3.select('.country-label[data-id="' + id + '"]')
+          .classed("highlighted", true);
       }
     }
 
@@ -448,6 +513,8 @@
         .classed("selected", false)
         .style("fill", null)
         .style("stroke", null);
+      d3.selectAll(".country-label")
+        .classed("highlighted", false);
     });
 
   })();
