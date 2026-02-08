@@ -180,7 +180,7 @@
 <body>
   <div id="header">
     <h1>Interactive World Map</h1>
-    <p>Click on any country to highlight it. Click again to deselect.</p>
+    <p>Click on any country or US state to highlight it. Click again to deselect.</p>
     <button id="reset-btn">Reset All</button>
   </div>
   <div id="tooltip"></div>
@@ -322,7 +322,7 @@
     };
 
     var largeCountries = {
-      "840": true, "124": true, "643": true, "156": true, "076": true,
+      "124": true, "643": true, "156": true, "076": true,
       "036": true, "356": true, "032": true, "398": true, "012": true
     };
 
@@ -337,33 +337,93 @@
       "702": true, "064": true
     };
 
-    var worldDataUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+    // US state FIPS code → name
+    var stateNames = {
+      "01": "Alabama", "02": "Alaska", "04": "Arizona", "05": "Arkansas",
+      "06": "California", "08": "Colorado", "09": "Connecticut", "10": "Delaware",
+      "11": "DC", "12": "Florida", "13": "Georgia", "15": "Hawaii",
+      "16": "Idaho", "17": "Illinois", "18": "Indiana", "19": "Iowa",
+      "20": "Kansas", "21": "Kentucky", "22": "Louisiana", "23": "Maine",
+      "24": "Maryland", "25": "Massachusetts", "26": "Michigan", "27": "Minnesota",
+      "28": "Mississippi", "29": "Missouri", "30": "Montana", "31": "Nebraska",
+      "32": "Nevada", "33": "New Hampshire", "34": "New Jersey", "35": "New Mexico",
+      "36": "New York", "37": "North Carolina", "38": "North Dakota", "39": "Ohio",
+      "40": "Oklahoma", "41": "Oregon", "42": "Pennsylvania", "44": "Rhode Island",
+      "45": "South Carolina", "46": "South Dakota", "47": "Tennessee", "48": "Texas",
+      "49": "Utah", "50": "Vermont", "51": "Virginia", "53": "Washington",
+      "54": "West Virginia", "55": "Wisconsin", "56": "Wyoming", "60": "Am. Samoa",
+      "66": "Guam", "69": "N. Mariana Is.", "72": "Puerto Rico", "78": "U.S. Virgin Is."
+    };
 
-    // Adjacency map: countryId -> [neighborId, ...]
+    var worldDataUrl = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+    var statesDataUrl = "https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json";
+
+    // Adjacency map: id -> [neighborId, ...]
     var adjacency = {};
 
-    d3.json(worldDataUrl).then(function (world) {
+    Promise.all([
+      d3.json(worldDataUrl),
+      d3.json(statesDataUrl)
+    ]).then(function (results) {
+      var world = results[0];
+      var us = results[1];
+
       // Hide loading indicator
       var loadingEl = document.getElementById("loading");
       if (loadingEl) loadingEl.style.display = "none";
 
+      // --- World countries (exclude US, id "840") ---
       var countries = topojson.feature(world, world.objects.countries);
+      var filteredCountries = {
+        type: "FeatureCollection",
+        features: countries.features.filter(function (f) { return f.id !== "840"; })
+      };
 
-      // Build adjacency using topojson.neighbors
-      var neighbors = topojson.neighbors(world.objects.countries.geometries);
-      var geometries = world.objects.countries.geometries;
-      for (var i = 0; i < geometries.length; i++) {
-        var myId = geometries[i].id;
-        adjacency[myId] = [];
-        for (var j = 0; j < neighbors[i].length; j++) {
-          adjacency[myId].push(geometries[neighbors[i][j]].id);
+      // Build country adjacency
+      var wGeom = world.objects.countries.geometries;
+      var wNeighbors = topojson.neighbors(wGeom);
+      for (var i = 0; i < wGeom.length; i++) {
+        var cId = wGeom[i].id;
+        if (cId === "840") continue; // skip US
+        adjacency[cId] = [];
+        for (var j = 0; j < wNeighbors[i].length; j++) {
+          var nId = wGeom[wNeighbors[i][j]].id;
+          if (nId !== "840") adjacency[cId].push(nId);
         }
       }
 
+      // --- US states ---
+      var states = topojson.feature(us, us.objects.states);
+      // Prefix state IDs with "US-" to avoid collision with country numeric IDs
+      states.features.forEach(function (f) {
+        f.id = "US-" + f.id;
+      });
+
+      // Build state adjacency
+      var sGeom = us.objects.states.geometries;
+      var sNeighbors = topojson.neighbors(sGeom);
+      for (var si = 0; si < sGeom.length; si++) {
+        var sId = "US-" + sGeom[si].id;
+        adjacency[sId] = [];
+        for (var sj = 0; sj < sNeighbors[si].length; sj++) {
+          adjacency[sId].push("US-" + sGeom[sNeighbors[si][sj]].id);
+        }
+      }
+
+      // Merge all features: countries + states
+      var allFeatures = filteredCountries.features.concat(states.features);
+
+      // Name lookup for all features
+      var allNames = {};
+      var key;
+      for (key in countryNames) { allNames[key] = countryNames[key]; }
+      for (key in stateNames) { allNames["US-" + key] = stateNames[key]; }
+
+      // --- Render ---
       var countriesGroup = masterGroup.append("g").attr("class", "countries-group");
 
       countriesGroup.selectAll(".country")
-        .data(countries.features)
+        .data(allFeatures)
         .join("path")
         .attr("class", "country")
         .attr("d", path)
@@ -372,7 +432,7 @@
           handleCountryClick(this, d);
         })
         .on("mouseenter", function (event, d) {
-          var name = countryNames[d.id] || d.properties.name || "Unknown";
+          var name = allNames[d.id] || d.properties.name || "Unknown";
           tooltip.textContent = name;
           tooltip.style.opacity = "1";
         })
@@ -387,19 +447,19 @@
       var labelsGroup = masterGroup.append("g").attr("class", "labels-group");
 
       labelsGroup.selectAll(".country-label")
-        .data(countries.features)
+        .data(allFeatures)
         .join("text")
         .attr("class", function (d) {
           var cls = "country-label";
           if (largeCountries[d.id]) cls += " large";
-          else if (smallCountries[d.id]) cls += " small";
+          else if (smallCountries[d.id] || (d.id && d.id.indexOf("US-") === 0)) cls += " small";
           return cls;
         })
         .attr("data-id", function (d) { return d.id; })
         .attr("x", function (d) { return path.centroid(d)[0]; })
         .attr("y", function (d) { return path.centroid(d)[1]; })
         .text(function (d) {
-          return countryNames[d.id] || "";
+          return allNames[d.id] || "";
         })
         .attr("display", function (d) {
           var centroid = path.centroid(d);
@@ -407,13 +467,13 @@
           var bounds = path.bounds(d);
           var bw = bounds[1][0] - bounds[0][0];
           var bh = bounds[1][1] - bounds[0][1];
-          if (bw < 12 || bh < 10) return "none";
+          if (bw < 8 || bh < 6) return "none";
           return null;
         });
 
       // Zoom and pan — applied to the single master group
       var zoom = d3.zoom()
-        .scaleExtent([1, 12])
+        .scaleExtent([1, 20])
         .on("zoom", function (event) {
           masterGroup.attr("transform", event.transform);
 
@@ -448,7 +508,7 @@
               var bounds = path.bounds(d);
               var bw = (bounds[1][0] - bounds[0][0]) * k;
               var bh = (bounds[1][1] - bounds[0][1]) * k;
-              if (bw < 12 || bh < 10) return "none";
+              if (bw < 8 || bh < 6) return "none";
               return null;
             });
         });
@@ -456,7 +516,7 @@
       svg.call(zoom);
 
     }).catch(function (err) {
-      console.error("Failed to load world map data:", err);
+      console.error("Failed to load map data:", err);
       var loadingEl = document.getElementById("loading");
       if (loadingEl) {
         loadingEl.innerHTML = '<span style="color:#ef4444;">Failed to load map data.<br>Please open this page via a local web server:<br><code style="color:#93c5fd;">python3 -m http.server 8000</code><br>then visit <code style="color:#93c5fd;">http://localhost:8000</code></span>';
