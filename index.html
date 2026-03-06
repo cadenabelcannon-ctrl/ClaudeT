@@ -57,17 +57,12 @@
       box-shadow: 0 0 8px rgba(147, 197, 253, 0.15);
     }
 
-    #header p {
-      font-size: 0.85rem;
-      color: #6b7280;
-      margin-top: 4px;
-    }
-
     /* Settings dropdown */
     #settings-wrapper {
-      display: inline-block;
-      position: relative;
-      margin-top: 8px;
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      z-index: 200;
     }
 
     #settings-btn {
@@ -93,9 +88,8 @@
     #settings-dropdown {
       display: none;
       position: absolute;
-      top: calc(100% + 6px);
-      left: 50%;
-      transform: translateX(-50%);
+      bottom: calc(100% + 6px);
+      right: 0;
       background: #111827;
       border: 1px solid #374151;
       border-radius: 6px;
@@ -264,28 +258,27 @@
 <body>
   <div id="header">
     <input type="text" id="title-input" value="Interactive World Map" spellcheck="false">
-    <p>Click on any country or US state to highlight it. Click again to deselect.</p>
-    <div id="settings-wrapper">
-      <button id="settings-btn">Settings &#9662;</button>
-      <div id="settings-dropdown">
-        <label class="settings-item">
-          <input type="checkbox" id="opt-hide-names"> Hide all names
-        </label>
-        <label class="settings-item">
-          <input type="checkbox" id="opt-highlighted-only"> Show only highlighted names
-        </label>
-        <label class="settings-item">
-          <input type="checkbox" id="opt-collapse-us"> Collapse US state names
-        </label>
-        <div class="settings-divider"></div>
-        <div class="settings-item action-btn" id="reset-btn">Reset All</div>
-      </div>
-    </div>
   </div>
   <div id="tooltip"></div>
   <div id="map-container">
     <div id="loading"><span class="spinner"></span>Loading map data...</div>
     <svg id="map"></svg>
+  </div>
+  <div id="settings-wrapper">
+    <button id="settings-btn">Settings &#9662;</button>
+    <div id="settings-dropdown">
+      <label class="settings-item">
+        <input type="checkbox" id="opt-hide-names"> Hide all names
+      </label>
+      <label class="settings-item">
+        <input type="checkbox" id="opt-highlighted-only"> Show only highlighted names
+      </label>
+      <label class="settings-item">
+        <input type="checkbox" id="opt-collapse-us"> Collapse US state names
+      </label>
+      <div class="settings-divider"></div>
+      <div class="settings-item action-btn" id="reset-btn">Reset All</div>
+    </div>
   </div>
 
   <script src="https://d3js.org/d3.v7.min.js"></script>
